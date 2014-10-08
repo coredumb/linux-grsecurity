@@ -2220,7 +2220,7 @@ struct proto udp_prot = {
 	.sysctl_wmem	   = &sysctl_udp_wmem_min,
 	.sysctl_rmem	   = &sysctl_udp_rmem_min,
 	.obj_size	   = sizeof(struct udp_sock),
-	.slab_flags	   = SLAB_DESTROY_BY_RCU,
+	.slab_flags	   = SLAB_DESTROY_BY_RCU | SLAB_NO_SANITIZE,
 	.h.udp_table	   = &udp_table,
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt = compat_udp_setsockopt,
