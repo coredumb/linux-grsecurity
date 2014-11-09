@@ -187,7 +187,7 @@ static void con_fault(struct ceph_connection *con);
 #define MAX_ADDR_STR_LEN	64	/* 54 is enough */
 
 static char addr_str[ADDR_STR_COUNT][MAX_ADDR_STR_LEN];
-static atomic_t addr_str_seq = ATOMIC_INIT(0);
+static atomic_unchecked_t addr_str_seq = ATOMIC_INIT(0);
 
 static struct page *zero_page;		/* used in certain error cases */
 
@@ -198,7 +198,7 @@ const char *ceph_pr_addr(const struct sockaddr_storage *ss)
 	struct sockaddr_in *in4 = (struct sockaddr_in *) ss;
 	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *) ss;
 
-	i = atomic_inc_return(&addr_str_seq) & ADDR_STR_COUNT_MASK;
+	i = atomic_inc_return_unchecked(&addr_str_seq) & ADDR_STR_COUNT_MASK;
 	s = addr_str[i];
 
 	switch (ss->ss_family) {
@@ -291,7 +291,11 @@ int ceph_msgr_init(void)
 	if (ceph_msgr_slab_init())
 		return -ENOMEM;
 
-	ceph_msgr_wq = alloc_workqueue("ceph-msgr", 0, 0);
+	/*
+	 * The number of active work items is limited by the number of
+	 * connections, so leave @max_active at default.
+	 */
+	ceph_msgr_wq = alloc_workqueue("ceph-msgr", WQ_MEM_RECLAIM, 0);
 	if (ceph_msgr_wq)
 		return 0;
 
