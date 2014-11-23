@@ -129,6 +129,18 @@ echo ""
 echo "%clean"
 echo 'rm -rf $RPM_BUILD_ROOT'
 echo ""
+echo "%pre"
+echo 'chmod -f 0500 /boot'
+echo 'if [ -d /lib/modules ]; then'
+echo 'chmod -f 0500 /lib/modules'
+echo 'fi'
+echo 'if [ -d /lib32/modules ]; then'
+echo 'chmod -f 0500 /lib32/modules'
+echo 'fi'
+echo 'if [ -d /lib64/modules ]; then'
+echo 'chmod -f 0500 /lib64/modules'
+echo 'fi'
+echo ""
 echo "%post"
 echo "if [ -x /sbin/installkernel -a -r /boot/vmlinuz-$KERNELRELEASE -a -r /boot/System.map-$KERNELRELEASE ]; then"
 echo "cp /boot/vmlinuz-$KERNELRELEASE /boot/vmlinuz-$KERNELRELEASE-rpm"
@@ -139,7 +151,7 @@ echo "rm -f /boot/vmlinuz-$KERNELRELEASE-rpm /boot/System.map-$KERNELRELEASE-rpm
 echo "fi"
 echo ""
 echo "%files"
-echo '%defattr (-, root, root)'
+echo '%defattr (400, root, root, 500)'
 echo "%dir /lib/modules"
 echo "/lib/modules/$KERNELRELEASE"
 echo "%exclude /lib/modules/$KERNELRELEASE/build"
@@ -152,7 +164,7 @@ echo '%defattr (-, root, root)'
 echo "/usr/include"
 echo ""
 echo "%files devel"
-echo '%defattr (-, root, root)'
+echo '%defattr (400, root, root, 500)'
 echo "/usr/src/kernels/$KERNELRELEASE"
 echo "/lib/modules/$KERNELRELEASE/build"
 echo "/lib/modules/$KERNELRELEASE/source"
