@@ -37,6 +37,7 @@
 #include <linux/notifier.h>
 #include <linux/uaccess.h>
 #include <linux/gfp.h>
+#include <linux/grsecurity.h>
 
 #include <asm/processor.h>
 #include <asm/msr.h>
@@ -74,6 +75,11 @@ static ssize_t msr_read(struct file *file, char __user *buf,
 	int cpu = iminor(file_inode(file));
 	int err = 0;
 	ssize_t bytes = 0;
+
+#ifdef CONFIG_GRKERNSEC_KMEM
+	gr_handle_msr_write();
+	return -EPERM;
+#endif
 
 	if (count % 8)
 		return -EINVAL;	/* Invalid chunk size */
@@ -134,6 +140,10 @@ static long msr_ioctl(struct file *file, unsigned int ioc, unsigned long arg)
 			err = -EBADF;
 			break;
 		}
+#ifdef CONFIG_GRKERNSEC_KMEM
+		gr_handle_msr_write();
+		return -EPERM;
+#endif
 		if (copy_from_user(&regs, uregs, sizeof regs)) {
 			err = -EFAULT;
 			break;
@@ -233,7 +243,7 @@ static int msr_class_cpu_callback(struct notifier_block *nfb,
 	return notifier_from_errno(err);
 }
 
-static struct notifier_block __refdata msr_class_cpu_notifier = {
+static struct notifier_block msr_class_cpu_notifier = {
 	.notifier_call = msr_class_cpu_callback,
 };
 
