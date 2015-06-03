@@ -97,9 +97,17 @@ static __init int map_switcher(void)
 	 * The end address needs +1 because __get_vm_area allocates an
 	 * extra guard page, so we need space for that.
 	 */
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+	switcher_vma = __get_vm_area(TOTAL_SWITCHER_PAGES * PAGE_SIZE,
+				     VM_ALLOC | VM_KERNEXEC, switcher_addr, switcher_addr
+				     + (TOTAL_SWITCHER_PAGES+1) * PAGE_SIZE);
+#else
 	switcher_vma = __get_vm_area(TOTAL_SWITCHER_PAGES * PAGE_SIZE,
 				     VM_ALLOC, switcher_addr, switcher_addr
 				     + (TOTAL_SWITCHER_PAGES+1) * PAGE_SIZE);
+#endif
+
 	if (!switcher_vma) {
 		err = -ENOMEM;
 		printk("lguest: could not map switcher pages high\n");
@@ -124,7 +132,7 @@ static __init int map_switcher(void)
 	 * Now the Switcher is mapped at the right address, we can't fail!
 	 * Copy in the compiled-in Switcher code (from x86/switcher_32.S).
 	 */
-	memcpy(switcher_vma->addr, start_switcher_text,
+	memcpy(switcher_vma->addr, ktla_ktva(start_switcher_text),
 	       end_switcher_text - start_switcher_text);
 
 	printk(KERN_INFO "lguest: mapped switcher at %p\n",
@@ -176,7 +184,7 @@ static void unmap_switcher(void)
 bool lguest_address_ok(const struct lguest *lg,
 		       unsigned long addr, unsigned long len)
 {
-	return (addr+len) / PAGE_SIZE < lg->pfn_limit && (addr+len >= addr);
+	return addr+len <= lg->pfn_limit * PAGE_SIZE && (addr+len >= addr);
 }
 
 /*

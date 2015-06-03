@@ -26,7 +26,7 @@
  */
 static inline long do_strnlen_user(const char __user *src, unsigned long count, unsigned long max)
 {
-	const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
+	static const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
 	long align, res = 0;
 	unsigned long c;
 
@@ -57,7 +57,8 @@ static inline long do_strnlen_user(const char __user *src, unsigned long count, 
 			return res + find_zero(data) + 1 - align;
 		}
 		res += sizeof(unsigned long);
-		if (unlikely(max < sizeof(unsigned long)))
+		/* We already handled 'unsigned long' bytes. Did we do it all ? */
+		if (unlikely(max <= sizeof(unsigned long)))
 			break;
 		max -= sizeof(unsigned long);
 		if (unlikely(__get_user(c,(unsigned long __user *)(src+res))))
