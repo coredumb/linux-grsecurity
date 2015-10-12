@@ -2267,10 +2267,10 @@ static unsigned int unix_poll(struct file *file, struct socket *sock, poll_table
 static bool unix_dgram_writable(struct sock *sk, struct sock *other,
                 bool *other_nospace)
 {
-    *other_full = false;
+    *other_nospace = false;
 
     if (other && unix_peer(other) != sk && unix_recvq_full(other)) {
-        *other_full = true;
+        *other_nospace = true;
         return false;
     }
 
