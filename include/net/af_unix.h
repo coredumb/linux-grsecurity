@@ -59,7 +59,7 @@ struct unix_sock {
 	atomic_long_t		inflight;
 	spinlock_t		lock;
 	unsigned char		recursion_level;
-	unsigned long		gc_flags;
+	unsigned long		flags;
 #define UNIX_GC_CANDIDATE	0
 #define UNIX_GC_MAYBE_CYCLE	1
 	struct socket_wq	peer_wq;
