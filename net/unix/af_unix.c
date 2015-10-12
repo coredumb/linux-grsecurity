@@ -1069,6 +1069,7 @@ static long unix_wait_for_peer(struct sock *other, long timeo)
      * unix_recvq_full() check below, or we receive a wakeup when it
      * empties. Pairs with the mb in unix_dgram_recvmsg().
      */
+    smp_mb__after_atomic();
 	sched = !sock_flag(other, SOCK_DEAD) &&
 		!(other->sk_shutdown & RCV_SHUTDOWN) &&
 		unix_recvq_full(other);
@@ -1619,6 +1620,7 @@ restart:
              * makes sure that epoll ET triggers correctly. Pairs
              * with the mb in unix_dgram_recvmsg().
              */
+            smp_mb__after_atomic();
             if (unix_recvq_full(other)) {
                 err = -EAGAIN;
                 goto out_unlock;
@@ -2323,6 +2325,7 @@ static unsigned int unix_dgram_poll(struct file *file, struct socket *sock,
          * via the unix_recvq_full() check below, or we receive a wakeup
          * when it empties. Pairs with the mb in unix_dgram_recvmsg().
          */
+        smp_mb__after_atomic();
         if (unix_dgram_writable(sk, other, &other_nospace))
             mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
     }
