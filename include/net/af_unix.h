@@ -62,6 +62,7 @@ struct unix_sock {
 	unsigned long		flags;
 #define UNIX_GC_CANDIDATE	0
 #define UNIX_GC_MAYBE_CYCLE	1
+#define UNIX_NOSPACE       2
 	struct socket_wq	peer_wq;
     wait_queue_t        wait;
 };
