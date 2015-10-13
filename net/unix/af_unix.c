@@ -316,7 +316,7 @@ found:
 	return s;
 }
 
-static inline int unix_writable(struct sock *sk)
+static inline bool unix_writable(struct sock *sk)
 {
 	return (atomic_read(&sk->sk_wmem_alloc) << 2) <= sk->sk_sndbuf;
 }
@@ -410,6 +410,9 @@ static void unix_release_sock(struct sock *sk, int embrion)
 	skpair = unix_peer(sk);
 
 	if (skpair != NULL) {
+        if (sk->sk_type != SOCK_STREAM)
+            remove_wait_queue(&unix_sk(skpair)->peer_wait,
+                    &u->wait);
 		if (sk->sk_type == SOCK_STREAM || sk->sk_type == SOCK_SEQPACKET) {
 			unix_state_lock(skpair);
 			/* No more writes */
@@ -625,6 +628,16 @@ static struct proto unix_proto = {
  */
 static struct lock_class_key af_unix_sk_receive_queue_lock_key;
 
+static int peer_wake(wait_queue_t *wait, unsigned mode, int sync, void *key)
+{
+   struct unix_sock *u;
+
+   u = container_of(wait, struct unix_sock, wait);
+   wake_up_interruptible_sync_poll(sk_sleep(&u->sk), key);
+
+   return 0;
+}
+
 static struct sock *unix_create1(struct net *net, struct socket *sock)
 {
 	struct sock *sk = NULL;
@@ -653,6 +666,7 @@ static struct sock *unix_create1(struct net *net, struct socket *sock)
 	INIT_LIST_HEAD(&u->link);
 	mutex_init(&u->readlock); /* single task reading lock */
 	init_waitqueue_head(&u->peer_wait);
+    init_waitqueue_func_entry(&u->wait, peer_wake);
 	unix_insert_socket(unix_sockets_unbound(sk), sk);
 out:
 	if (sk == NULL)
@@ -1046,8 +1060,12 @@ restart:
 		sock_put(old_peer);
 	} else {
 		unix_peer(sk) = other;
+        add_wait_queue(&unix_sk(other)->peer_wait, &unix_sk(sk)->wait);
 		unix_state_double_unlock(sk, other);
 	}
+    /* New remote may have created write space for us */
+    wake_up_interruptible_sync_poll(sk_sleep(sk),
+                POLLOUT | POLLWRNORM | POLLWRBAND);
 	return 0;
 
 out_unlock:
@@ -1065,6 +1083,12 @@ static long unix_wait_for_peer(struct sock *other, long timeo)
 
 	prepare_to_wait_exclusive(&u->peer_wait, &wait, TASK_INTERRUPTIBLE);
 
+    set_bit(UNIX_NOSPACE, &u->flags);
+    /* Ensure that we either see space in the peer sk_receive_queue via the
+     * unix_recvq_full() check below, or we receive a wakeup when it
+     * empties. Pairs with the mb in unix_dgram_recvmsg().
+     */
+    barrier();
 	sched = !sock_flag(other, SOCK_DEAD) &&
 		!(other->sk_shutdown & RCV_SHUTDOWN) &&
 		unix_recvq_full(other);
@@ -1202,6 +1226,8 @@ restart:
 
 	sock_hold(sk);
 	unix_peer(newsk)	= sk;
+    if (sk->sk_type == SOCK_SEQPACKET)
+        add_wait_queue(&unix_sk(sk)->peer_wait, &unix_sk(newsk)->wait);
 	newsk->sk_state		= TCP_ESTABLISHED;
 	newsk->sk_type		= sk->sk_type;
 	init_peercred(newsk);
@@ -1228,6 +1254,8 @@ restart:
 
 	smp_mb__after_atomic_inc();	/* sock_hold() does an atomic_inc() */
 	unix_peer(sk)	= newsk;
+    if (sk->sk_type == SOCK_SEQPACKET)
+        add_wait_queue(&unix_sk(newsk)->peer_wait, &unix_sk(sk)->wait);
 
 	unix_state_unlock(sk);
 
@@ -1262,6 +1290,10 @@ static int unix_socketpair(struct socket *socka, struct socket *sockb)
 	sock_hold(skb);
 	unix_peer(ska) = skb;
 	unix_peer(skb) = ska;
+    if (ska->sk_type != SOCK_STREAM) {
+        add_wait_queue(&unix_sk(ska)->peer_wait, &unix_sk(skb)->wait);
+        add_wait_queue(&unix_sk(skb)->peer_wait, &unix_sk(ska)->wait);
+    }
 	init_peercred(ska);
 	init_peercred(skb);
 
@@ -1572,6 +1604,7 @@ restart:
 		unix_state_lock(sk);
 		if (unix_peer(sk) == other) {
 			unix_peer(sk) = NULL;
+            remove_wait_queue(&unix_sk(other)->peer_wait, &u->wait);
 			unix_state_unlock(sk);
 
 			unix_dgram_disconnected(sk, other);
@@ -1599,17 +1632,25 @@ restart:
 
 	if (unix_peer(other) != sk && unix_recvq_full(other)) {
 		if (!timeo) {
-			err = -EAGAIN;
-			goto out_unlock;
-		}
-
-		timeo = unix_wait_for_peer(other, timeo);
-
-		err = sock_intr_errno(timeo);
-		if (signal_pending(current))
-			goto out_free;
-
-		goto restart;
+            set_bit(UNIX_NOSPACE, &unix_sk(other)->flags);
+            /* Ensure that we either see space in the peer
+             * sk_receive_queue via the unix_recvq_full() check
+             * below, or we receive a wakeup when it empties. This
+             * makes sure that epoll ET triggers correctly. Pairs
+             * with the mb in unix_dgram_recvmsg().
+             */
+            barrier();
+            if (unix_recvq_full(other)) {
+                err = -EAGAIN;
+                goto out_unlock;
+            }
+        } else {
+            timeo = unix_wait_for_peer(other, timeo);
+            err = sock_intr_errno(timeo);
+            if (signal_pending(current))
+                goto out_free;
+            goto restart;
+        }
 	}
 
 	if (sock_flag(other, SOCK_RCVTSTAMP))
@@ -1827,8 +1868,19 @@ static int unix_dgram_recvmsg(struct kiocb *iocb, struct socket *sock,
 		goto out_unlock;
 	}
 
-	wake_up_interruptible_sync_poll(&u->peer_wait,
-					POLLOUT | POLLWRNORM | POLLWRBAND);
+    /* Ensure that waiters on our sk->sk_receive_queue draining that check
+     * via unix_recvq_full() either see space in the queue or get a wakeup
+     * below. sk->sk_receive_queue is reduece by the __skb_recv_datagram()
+     * call above. Pairs with the mb in unix_dgram_sendmsg(),
+     * unix_dgram_poll(), and unix_wait_for_peer().
+     */
+    smp_mb();
+    if (test_bit(UNIX_NOSPACE, &u->flags)) {
+        clear_bit(UNIX_NOSPACE, &u->flags);
+        wake_up_interruptible_sync_poll(&u->peer_wait,
+                        POLLOUT | POLLWRNORM |
+                        POLLWRBAND);
+    }
 
 	if (msg->msg_name)
 		unix_copy_addr(msg, skb->sk);
@@ -2231,11 +2283,25 @@ static unsigned int unix_poll(struct file *file, struct socket *sock, poll_table
 	return mask;
 }
 
+static bool unix_dgram_writable(struct sock *sk, struct sock *other,
+                bool *other_nospace)
+{
+    *other_nospace = false;
+
+    if (other && unix_peer(other) != sk && unix_recvq_full(other)) {
+        *other_nospace = true;
+        return false;
+    }
+
+    return unix_writable(sk);
+}
+
 static unsigned int unix_dgram_poll(struct file *file, struct socket *sock,
 				    poll_table *wait)
 {
 	struct sock *sk = sock->sk, *other;
-	unsigned int mask, writable;
+    unsigned int mask;
+    bool other_nospace;
 
 	sock_poll_wait(file, sk_sleep(sk), wait);
 	mask = 0;
@@ -2267,24 +2333,23 @@ static unsigned int unix_dgram_poll(struct file *file, struct socket *sock,
 	if (!(poll_requested_events(wait) & (POLLWRBAND|POLLWRNORM|POLLOUT)))
 		return mask;
 
-	writable = unix_writable(sk);
 	other = unix_peer_get(sk);
-	if (other) {
-		unix_state_lock(other);
-		if (!sock_flag(other, SOCK_DEAD) && unix_peer(other) != sk) {
-			unix_state_unlock(other);
-			sock_poll_wait(file, &unix_sk(other)->peer_wait, wait);
-			if (unix_recvq_full(other))
-				writable = 0;
-		} else
-			unix_state_unlock(other);
-		sock_put(other);
-	}
-
-	if (writable)
-		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
-	else
-		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+    if (unix_dgram_writable(sk, other, &other_nospace)) {
+        mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+    } else {
+        set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+        if (other_nospace)
+            set_bit(UNIX_NOSPACE, &unix_sk(other)->flags);
+        /* Ensure that we either see space in the peer sk_receive_queue
+         * via the unix_recvq_full() check below, or we receive a wakeup
+         * when it empties. Pairs with the mb in unix_dgram_recvmsg().
+         */
+        barrier();
+        if (unix_dgram_writable(sk, other, &other_nospace))
+            mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+    }
+    if (other)
+        sock_put(other);            
 
 	return mask;
 }
